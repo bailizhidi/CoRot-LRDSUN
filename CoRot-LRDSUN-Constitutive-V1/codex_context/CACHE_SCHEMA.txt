@@ -1,0 +1,4 @@
+FILE: /data/home/scxk573/run/lsz/ysy/physicsnemo/my_experiments/CoRot-LRDSUN-Constitutive-V1/prepared_cache_prod_v1/sample_0000/angle_progress.npy
+SUFFIX: .npy
+==============================================================================================================
+angle_progress.npy                       shape=(181,)                   dtype=float32         

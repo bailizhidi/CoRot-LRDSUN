@@ -1,0 +1,17 @@
+DATE=2026-09-23T14:06:37+08:00
+HOSTNAME=ln01
+PROJECT_DIR=/data/home/scxk573/run/lsz/ysy/physicsnemo/my_experiments/CoRot-LRDSUN-Constitutive-V1
+RAW_DATA_DIR=/data/home/scxk573/run/lsz/ysy/physicsnemo/data/dataset_corot_constitutive_prod_v1
+CACHE_DIR=/data/home/scxk573/run/lsz/ysy/physicsnemo/my_experiments/CoRot-LRDSUN-Constitutive-V1/prepared_cache_prod_v1
+
+=== Python ===
+/data/run01/scxk573/lsz/codes/physi-ai/.venv/bin/python
+Python 3.13.13
+
+=== PyTorch / CUDA ===
+torch: 2.10.0+cu130
+cuda_available: False
+cuda_device_count: 0
+
+=== Git ===
+No .git directory inside project.

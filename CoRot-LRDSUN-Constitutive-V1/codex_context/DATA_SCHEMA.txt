@@ -1,0 +1,80 @@
+FILE: /data/home/scxk573/run/lsz/ysy/physicsnemo/data/dataset_corot_constitutive_prod_v1/corot_constitutive_prod_v1_Base_TC4_sample_0000.npz
+SUFFIX: .npz
+==============================================================================================================
+U_tube                                   shape=(181, 12596, 3)          dtype=float32         
+S_corot_outer                            shape=(181, 12596, 4)          dtype=float32         
+S_corot_inner                            shape=(181, 12596, 4)          dtype=float32         
+PE_corot_outer                           shape=(181, 12596, 4)          dtype=float32         
+PE_corot_inner                           shape=(181, 12596, 4)          dtype=float32         
+LE_corot_outer                           shape=(181, 12596, 4)          dtype=float32         
+LE_corot_inner                           shape=(181, 12596, 4)          dtype=float32         
+PEEQ_outer                               shape=(181, 12596, 1)          dtype=float32         
+S_mises_corot_outer                      shape=(181, 12596, 1)          dtype=float32         
+S_mises_contribavg_outer                 shape=(181, 12596, 1)          dtype=float32         
+PEEQ_inner                               shape=(181, 12596, 1)          dtype=float32         
+S_mises_corot_inner                      shape=(181, 12596, 1)          dtype=float32         
+S_mises_contribavg_inner                 shape=(181, 12596, 1)          dtype=float32         
+format_version                           shape=(1,)                     dtype=int32           
+data_contract                            shape=(1,)                     dtype=|S256           
+tensor_component_labels                  shape=(4,)                     dtype=|S16            
+tensor_basis                             shape=(1,)                     dtype=|S128           
+tensor_transform_contract                shape=(1,)                     dtype=|S192           
+planned_center_state                     shape=(1,)                     dtype=|S128           
+physical_outer_surface_label             shape=(1,)                     dtype=|S16            
+physical_inner_surface_label             shape=(1,)                     dtype=|S16            
+surface_labels                           shape=(2,)                     dtype=|S32            
+surface_section_point_numbers            shape=(2,)                     dtype=int32           
+tube_mesh_pos                            shape=(12596, 3)               dtype=float32         
+tube_node_label                          shape=(12596,)                 dtype=int32           
+tube_cells                               shape=(12549, 4)               dtype=int32           
+tube_cell_num_nodes                      shape=(12549,)                 dtype=int8            
+tube_element_label                       shape=(12549,)                 dtype=int32           
+Q0                                       shape=(12596, 3, 3)            dtype=float32         
+frame_neighbor_ptr                       shape=(12597,)                 dtype=int64           
+frame_neighbor_index                     shape=(150682,)                dtype=int32           
+frame_hops                               shape=(1,)                     dtype=int32           
+frame_index                              shape=(181,)                   dtype=int16           
+frame_step_index                         shape=(181,)                   dtype=int16           
+frame_local_index                        shape=(181,)                   dtype=int8            
+frame_value                              shape=(181,)                   dtype=float64         
+cumulative_time                          shape=(181,)                   dtype=float64         
+angle_deg                                shape=(181,)                   dtype=float32         
+angle_progress                           shape=(181,)                   dtype=float32         
+num_frames                               shape=(1,)                     dtype=int32           
+q_det_min                                shape=(181,)                   dtype=float64         
+q_orthogonality_max                      shape=(181,)                   dtype=float64         
+kabsch_rank2_ratio_p01                   shape=(181,)                   dtype=float64         
+transport_normal_mapping_residual_max    shape=(181,)                   dtype=float64         
+transport_angle_p50_deg                  shape=(181,)                   dtype=float64         
+transport_angle_p99_deg                  shape=(181,)                   dtype=float64         
+transport_angle_max_deg                  shape=(181,)                   dtype=float64         
+S_transport_oop_ratio_max                shape=(181,)                   dtype=float64         
+PE_transport_oop_ratio_max               shape=(181,)                   dtype=float64         
+LE_transport_oop_ratio_max               shape=(181,)                   dtype=float64         
+frame_extraction_seconds                 shape=(181,)                   dtype=float64         
+S_contrib_count_min                      shape=(181,)                   dtype=int32           
+S_contrib_count_max                      shape=(181,)                   dtype=int32           
+PE_contrib_count_min                     shape=(181,)                   dtype=int32           
+PE_contrib_count_max                     shape=(181,)                   dtype=int32           
+LE_contrib_count_min                     shape=(181,)                   dtype=int32           
+LE_contrib_count_max                     shape=(181,)                   dtype=int32           
+PEEQ_contrib_count_min                   shape=(181,)                   dtype=int32           
+PEEQ_contrib_count_max                   shape=(181,)                   dtype=int32           
+sample_id                                shape=(1,)                     dtype=int32           
+geometry_id                              shape=(1,)                     dtype=int32           
+split                                    shape=(1,)                     dtype=|S32            
+material_type                            shape=(1,)                     dtype=|S64            
+region                                   shape=(1,)                     dtype=|S64            
+D_outer                                  shape=(1,)                     dtype=float32         
+Thickness                                shape=(1,)                     dtype=float32         
+R_bending                                shape=(1,)                     dtype=float32         
+t_over_D                                 shape=(1,)                     dtype=float32         
+R_over_D                                 shape=(1,)                     dtype=float32         
+E_modulus                                shape=(1,)                     dtype=float32         
+Poisson_Ratio                            shape=(1,)                     dtype=float32         
+Density_tonne_per_mm3                    shape=(1,)                     dtype=float64         
+num_tube_nodes                           shape=(1,)                     dtype=int32           
+num_tube_elements                        shape=(1,)                     dtype=int32           
+source_sample_folder                     shape=(1,)                     dtype=|S192           
+S_PE_layout_identical                    shape=(1,)                     dtype=int8            
+S_LE_layout_identical                    shape=(1,)                     dtype=int8            

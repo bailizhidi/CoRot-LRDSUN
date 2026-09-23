@@ -1,0 +1,1 @@
+/data/home/scxk573/run/lsz/ysy/physicsnemo/my_experiments/CoRot-LRDSUN-Constitutive-V1/outputs/finetune_5step/run_20260920_143444_1610485

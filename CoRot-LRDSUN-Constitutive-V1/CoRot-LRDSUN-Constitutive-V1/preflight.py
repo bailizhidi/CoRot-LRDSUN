@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse, json
+from pathlib import Path
+import numpy as np
+import torch
+
+from corot_lrdsun.data import PreparedSample, balanced_centers, expand_centers_both_surfaces, to_torch
+from corot_lrdsun.geometry import rigid_objectivity_self_test
+from corot_lrdsun.io import load_manifest, split_records
+from corot_lrdsun.model import CoRotLRDSUN
+from corot_lrdsun.normalization import load_stats, normalize_inputs
+from corot_lrdsun.losses import compute_losses
+
+
+def main():
+    ap=argparse.ArgumentParser(); ap.add_argument("--cache-dir",type=Path,required=True); ap.add_argument("--stats",type=Path,default=None); ap.add_argument("--device",default="cuda")
+    args=ap.parse_args(); stats=load_stats(args.stats or args.cache_dir/"stats.json")
+    obj=rigid_objectivity_self_test(); print("objectivity:",json.dumps(obj,indent=2))
+    if not obj["passed"]: raise SystemExit("Rigid-objectivity self-test failed")
+    m=load_manifest(args.cache_dir); rec=split_records(m,"train")[0]; s=PreparedSample(rec)
+    rng=np.random.default_rng(7)
+    c_geom=balanced_centers(s.region_id,64,rng)
+    c,surf=expand_centers_both_surfaces(c_geom)
+    b=s.make_batch(10,c,surf)
+    if b["state"].shape[1] != 9 or b["edge"].shape[2] != 12: raise SystemExit("Contract dimensions failed")
+    if np.min(b["delta_peeq"]) < -1e-8: raise SystemExit("Ground-truth PEEQ is not monotone")
+    dev=torch.device(args.device if torch.cuda.is_available() else "cpu"); tb=to_torch(b,dev); tb=normalize_inputs(tb,stats)
+    model=CoRotLRDSUN(hidden_dim=96).to(dev); out=model(tb["state_n"],tb["context_n"],tb["edge_n"],tb["mask"])
+    cfg={"plastic_threshold":stats.get("plastic_threshold",1e-10),"w_delta8":1,"w_peeq":1,"w_gate":0.2,"w_le":0.25,"w_mises":0.25}
+    loss,parts,_=compute_losses(out,tb,stats,cfg); loss.backward()
+    print("batch shapes:", {k:list(v.shape) for k,v in tb.items() if hasattr(v,"shape")})
+    print("loss parts:",parts)
+    print("neighbor material state fields: NONE (contract enforced by batch schema)")
+    print("PREFLIGHT PASSED")
+
+if __name__=="__main__": main()

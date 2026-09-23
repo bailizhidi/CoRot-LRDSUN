@@ -1,0 +1,2 @@
+C1024_5STEP: /data/home/scxk573/run/lsz/ysy/physicsnemo/my_experiments/CoRot-LRDSUN-Constitutive-V1/logs/ysy_corot-5step-ft_1610485.err
+C2048_5STEP: /data/home/scxk573/run/lsz/ysy/physicsnemo/my_experiments/CoRot-LRDSUN-Constitutive-V1/logs/ysy_corot-5s-c2048_1619336.err

@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+import numpy as np
+
+from corot_lrdsun.contracts import STATS_FORMAT
+from corot_lrdsun.data import PreparedSample, balanced_centers, balanced_surfaces
+from corot_lrdsun.io import load_manifest, split_records, save_json
+from corot_lrdsun.physics import mises_from_s4_numpy
+
+
+class Moments:
+    def __init__(self, dim):
+        self.n = 0; self.sum = np.zeros(dim, np.float64); self.sq = np.zeros(dim, np.float64)
+    def add(self, x):
+        x = np.asarray(x, np.float64).reshape(-1, self.sum.size)
+        self.n += x.shape[0]; self.sum += x.sum(0); self.sq += (x*x).sum(0)
+    def result(self, floor=1e-8):
+        mean = self.sum/max(self.n,1); var = self.sq/max(self.n,1)-mean*mean
+        std = np.sqrt(np.maximum(var, floor*floor))
+        return mean.astype(float).tolist(), std.astype(float).tolist()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--cache-dir", type=Path, required=True)
+    ap.add_argument("--output", type=Path, default=None)
+    ap.add_argument("--transitions-per-sample", type=int, default=12)
+    ap.add_argument("--centers-per-transition", type=int, default=512)
+    ap.add_argument("--seed", type=int, default=1234)
+    ap.add_argument("--plastic-threshold", type=float, default=1e-10)
+    args = ap.parse_args()
+    m = load_manifest(args.cache_dir); train = split_records(m, "train")
+    rng = np.random.default_rng(args.seed)
+    ms = Moments(9); me = Moments(12); mc = Moments(6); md = Moments(8); ml = Moments(4)
+    peeq_vals = []; mises_vals = []; active = inactive = 0
+    for ir, rec in enumerate(train, 1):
+        s = PreparedSample(rec)
+        ts = rng.choice(np.arange(s.T-1), size=min(args.transitions_per_sample, s.T-1), replace=False)
+        for t in ts:
+            c = balanced_centers(s.region_id, args.centers_per_transition, rng)
+            surf = balanced_surfaces(len(c), rng)
+            b = s.make_batch(int(t), c, surf)
+            ms.add(b["state"]); mc.add(b["context"]); md.add(b["delta8"]); ml.add(b["le_next"])
+            valid_edges = b["edge"][b["mask"]]
+            me.add(valid_edges)
+            p = b["delta_peeq"].reshape(-1)
+            peeq_vals.append(p)
+            active += int(np.sum(p > args.plastic_threshold)); inactive += int(np.sum(p <= args.plastic_threshold))
+            mises_vals.append(mises_from_s4_numpy(b["next_state"][:, :4]).reshape(-1))
+        print(f"stats {ir}/{len(train)} sample={rec['sample_id']}", flush=True)
+    state_mean,state_std=ms.result(1e-7); edge_mean,edge_std=me.result(1e-7); ctx_mean,ctx_std=mc.result(1e-7)
+    dmean,dstd=md.result(1e-9); lemean,lestd=ml.result(1e-9)
+    pv = np.concatenate(peeq_vals) if peeq_vals else np.array([1.0])
+    pos = pv[pv > args.plastic_threshold]
+    peeq_scale = float(np.percentile(pos, 90)) if len(pos) else 1e-8
+    peeq_scale = max(peeq_scale, 1e-8)
+    mv = np.concatenate(mises_vals) if mises_vals else np.array([1.0])
+    mises_scale = max(float(np.percentile(np.abs(mv), 90)), 1.0)
+    out = {
+        "format": STATS_FORMAT, "train_samples": len(train), "seed": args.seed,
+        "samples_used_per_transition": args.centers_per_transition,
+        "state_mean":state_mean,"state_std":state_std,
+        "edge_mean":edge_mean,"edge_std":edge_std,
+        "context_mean":ctx_mean,"context_std":ctx_std,
+        "delta8_mean":dmean,"delta8_std":dstd,
+        "le_mean":lemean,"le_std":lestd,
+        "peeq_delta_scale":peeq_scale,"mises_scale":mises_scale,
+        "plastic_threshold":args.plastic_threshold,
+        "plastic_active_fraction": active/max(active+inactive,1),
+        "plastic_pos_weight": float(np.clip(inactive/max(active,1),1.0,20.0)),
+    }
+    p = args.output or (args.cache_dir / "stats.json"); save_json(p,out)
+    print(f"Wrote {p}")
+    print(f"plastic_active_fraction={out['plastic_active_fraction']:.6f} peeq_delta_scale={peeq_scale:.6e} mises_scale={mises_scale:.6e}")
+
+if __name__ == "__main__": main()

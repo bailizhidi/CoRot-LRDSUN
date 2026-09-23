@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import gc
+import json
+import math
+import random
+import time
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+from corot_lrdsun.data import PreparedSample, balanced_centers, balanced_surfaces, to_torch
+from corot_lrdsun.io import load_manifest, split_records, save_json
+from corot_lrdsun.losses import compute_losses
+from corot_lrdsun.model import CoRotLRDSUN
+from corot_lrdsun.normalization import load_stats, normalize_inputs
+from corot_lrdsun.runtime import setup_ddp, barrier, raw_model, set_seed, save_checkpoint
+
+
+def reduce_pair(total,n,device):
+    x=torch.tensor([total,n],device=device,dtype=torch.float64)
+    if dist.is_initialized(): dist.all_reduce(x)
+    return float(x[0]),float(x[1])
+
+
+def partition_records(records,world,rank,epoch,seed):
+    order=list(records); random.Random(seed+epoch).shuffle(order)
+    if len(order)%world:
+        need=world-(len(order)%world); order += order[:need]
+    return order[rank::world]
+
+
+def cyclic_transition_indices(
+    sample: PreparedSample,
+    epoch: int,
+    transitions_per_sample: int,
+    seed: int,
+):
+    """
+    Deterministic cyclic coverage of all t -> t+1 transitions.
+
+    Example for T=181 and transitions_per_sample=15:
+        180 transitions / 15 = 12 epochs per full cycle.
+
+    Within one 12-epoch cycle:
+      - every transition appears exactly once;
+      - no transition is repeated;
+      - no transition is omitted.
+
+    At the next cycle the permutation is reshuffled deterministically.
+    The schedule depends on sample_id and cycle_id, not DDP rank, so it is
+    reproducible even if a sample is assigned to another GPU in another epoch.
+    """
+    n_trans = int(sample.T - 1)
+    if n_trans <= 0:
+        raise RuntimeError(f"Invalid number of transitions: T={sample.T}")
+
+    k = min(max(int(transitions_per_sample), 1), n_trans)
+    cycle_epochs = int(math.ceil(n_trans / k))
+
+    epoch0 = int(epoch) - 1
+    cycle_id = epoch0 // cycle_epochs
+    slot_id = epoch0 % cycle_epochs
+
+    sample_id = int(sample.meta.get("sample_id", 0))
+
+    # Deterministic permutation for this sample and this temporal cycle.
+    cycle_seed = (
+        int(seed)
+        + sample_id * 1_000_003
+        + cycle_id * 10_000_019
+    )
+    rng = np.random.default_rng(cycle_seed)
+    perm = rng.permutation(n_trans)
+
+    a = slot_id * k
+    b = min(a + k, n_trans)
+    ts = perm[a:b].astype(np.int64, copy=False)
+
+    return ts, cycle_id, slot_id, cycle_epochs
+
+
+def iter_transition_batches(
+    sample: PreparedSample,
+    rng,
+    transitions_per_sample,
+    centers_per_transition,
+    batch_size,
+    transition_indices=None,
+):
+    """
+    Build center-node batches for selected transitions.
+
+    Training can provide transition_indices from cyclic_transition_indices().
+    Validation can leave transition_indices=None and retain fixed random
+    transition sampling.
+    """
+    if transition_indices is None:
+        ts = rng.choice(
+            np.arange(sample.T - 1),
+            size=min(transitions_per_sample, sample.T - 1),
+            replace=False,
+        )
+    else:
+        ts = np.asarray(transition_indices, dtype=np.int64).reshape(-1)
+
+    for t in ts.tolist():
+        c = balanced_centers(
+            sample.region_id,
+            centers_per_transition,
+            rng,
+        )
+        surf = balanced_surfaces(len(c), rng)
+
+        perm = rng.permutation(len(c))
+        c = c[perm]
+        surf = surf[perm]
+
+        for a in range(0, len(c), batch_size):
+            b = min(a + batch_size, len(c))
+            yield int(t), c[a:b], surf[a:b]
+
+
+@torch.no_grad()
+def validate(model,records,stats,device,args):
+    model.eval(); rng=np.random.default_rng(args.seed+99173)
+    totals={'loss':0.0,'delta8':0.0,'peeq':0.0,'gate':0.0,'le':0.0,'mises':0.0}; steps=0
+    cfg=vars(args)
+    use=records[:args.max_val_samples] if args.max_val_samples>0 else records
+    for rec in use:
+        s=PreparedSample(rec)
+        for t,c,surf in iter_transition_batches(s,rng,args.val_transitions_per_sample,args.val_centers_per_transition,args.eval_batch_size):
+            tb=normalize_inputs(to_torch(s.make_batch(t,c,surf),device),stats)
+            with torch.autocast(device_type='cuda',dtype=torch.bfloat16,enabled=not args.no_amp):
+                out=model(tb['state_n'],tb['context_n'],tb['edge_n'],tb['mask'])
+                loss,parts,_=compute_losses(out,tb,stats,cfg)
+            for k in totals: totals[k]+=parts[k]
+            steps+=1
+        del s; gc.collect()
+    return {k:v/max(steps,1) for k,v in totals.items()} | {'steps':steps}
+
+
+def main():
+    ap=argparse.ArgumentParser()
+    ap.add_argument('--cache-dir',type=Path,required=True); ap.add_argument('--stats',type=Path,default=None); ap.add_argument('--output-dir',type=Path,required=True)
+    ap.add_argument('--epochs',type=int,default=120); ap.add_argument('--batch-size',type=int,default=256); ap.add_argument('--eval-batch-size',type=int,default=512)
+    ap.add_argument('--transitions-per-sample',type=int,default=15); ap.add_argument('--centers-per-transition',type=int,default=512)
+    ap.add_argument(
+        '--transition-sampling',
+        type=str,
+        choices=('cyclic', 'random'),
+        default='cyclic',
+        help='Training transition schedule. cyclic guarantees periodic full temporal coverage.',
+    )
+    ap.add_argument('--val-transitions-per-sample',type=int,default=18); ap.add_argument('--val-centers-per-transition',type=int,default=512); ap.add_argument('--max-val-samples',type=int,default=0)
+    ap.add_argument('--hidden-dim',type=int,default=192); ap.add_argument('--dropout',type=float,default=0.0)
+    ap.add_argument('--lr',type=float,default=2e-4); ap.add_argument('--min-lr',type=float,default=2e-6); ap.add_argument('--weight-decay',type=float,default=1e-2); ap.add_argument('--grad-clip',type=float,default=1.0)
+    ap.add_argument('--w-delta8',type=float,default=1.0); ap.add_argument('--w-peeq',type=float,default=1.0); ap.add_argument('--w-gate',type=float,default=0.20); ap.add_argument('--w-le',type=float,default=0.25); ap.add_argument('--w-mises',type=float,default=0.25)
+    ap.add_argument('--plastic-threshold',type=float,default=1e-10); ap.add_argument('--early-stop-start',type=int,default=30); ap.add_argument('--early-stop-patience',type=int,default=20)
+    ap.add_argument('--seed',type=int,default=42); ap.add_argument('--no-amp',action='store_true'); ap.add_argument('--resume',type=Path,default=None); ap.add_argument('--smoke',action='store_true')
+    args=ap.parse_args()
+    rank,local,world,device=setup_ddp(); set_seed(args.seed,rank)
+    try:
+        manifest=load_manifest(args.cache_dir); train=split_records(manifest,'train'); val=split_records(manifest,'val')
+        if not train or not val: raise RuntimeError('Need train and val records in prepared cache')
+        stats=load_stats(args.stats or args.cache_dir/'stats.json')
+        args.plastic_threshold=float(stats.get('plastic_threshold',args.plastic_threshold))
+        if args.smoke:
+            args.epochs=min(args.epochs,2); args.transitions_per_sample=2; args.centers_per_transition=128; args.val_transitions_per_sample=2; args.val_centers_per_transition=128; args.max_val_samples=min(args.max_val_samples or 2,2)
+        model=CoRotLRDSUN(args.hidden_dim,args.dropout).to(device)
+        if world>1: model=DDP(model,device_ids=[local],output_device=local,find_unused_parameters=False)
+        opt=torch.optim.AdamW(model.parameters(),lr=args.lr,weight_decay=args.weight_decay)
+        sched=torch.optim.lr_scheduler.CosineAnnealingLR(opt,T_max=max(args.epochs,1),eta_min=args.min_lr)
+        start=1; best=float('inf'); history=[]; bad_epochs=0
+        if args.resume:
+            ck=torch.load(args.resume,map_location=device); raw_model(model).load_state_dict(ck['model']); opt.load_state_dict(ck['optimizer']); sched.load_state_dict(ck['scheduler']); start=int(ck['epoch'])+1; best=float(ck.get('best_val',best)); history=list(ck.get('history',[]))
+        if rank==0:
+            args.output_dir.mkdir(parents=True,exist_ok=True); save_json(args.output_dir/'config.json',{k:(str(v) if isinstance(v,Path) else v) for k,v in vars(args).items()}|{'cache_dir':str(args.cache_dir),'stats':str(args.stats or args.cache_dir/'stats.json')})
+            print(
+                f'train={len(train)} val={len(val)} '
+                f'world={world} device={device} start_epoch={start}',
+                flush=True,
+            )
+
+            n_trans_values = sorted(
+                {int(r['num_frames']) - 1 for r in train}
+            )
+
+            print(
+                'transition_sampling='
+                f'{args.transition_sampling} '
+                f'transitions_per_sample={args.transitions_per_sample} '
+                f'train_transition_counts={n_trans_values}',
+                flush=True,
+            )
+
+            if args.transition_sampling == 'cyclic':
+                if len(n_trans_values) == 1:
+                    ntr = n_trans_values[0]
+                    k = min(args.transitions_per_sample, ntr)
+                    cyc = int(math.ceil(ntr / k))
+                    print(
+                        f'cyclic_transition_contract: '
+                        f'{ntr} transitions, '
+                        f'{k} per sample per epoch, '
+                        f'{cyc} epochs/full temporal cycle',
+                        flush=True,
+                    )
+                else:
+                    print(
+                        'WARNING: training samples have different '
+                        'transition counts; cycle length is sample-specific.',
+                        flush=True,
+                    )
+        for epoch in range(start,args.epochs+1):
+            model.train()
+            local_records = partition_records(
+                train, world, rank, epoch, args.seed
+            )
+
+            sum_loss = 0.0
+            nsteps = 0
+            t0 = time.time()
+
+            # Audit-friendly temporal schedule log.
+            if rank == 0 and args.transition_sampling == 'cyclic':
+                n_trans_ref = int(train[0]['num_frames']) - 1
+                k_ref = min(args.transitions_per_sample, n_trans_ref)
+                cycle_epochs_ref = int(math.ceil(n_trans_ref / k_ref))
+                epoch0 = epoch - 1
+                cycle_id_ref = epoch0 // cycle_epochs_ref
+                slot_id_ref = epoch0 % cycle_epochs_ref
+
+                print(
+                    f'epoch={epoch:03d} '
+                    f'transition_schedule=cyclic '
+                    f'cycle={cycle_id_ref + 1} '
+                    f'slot={slot_id_ref + 1}/{cycle_epochs_ref} '
+                    f'transitions_per_sample={k_ref}/{n_trans_ref}',
+                    flush=True,
+                )
+
+            for ir, rec in enumerate(local_records, 1):
+                s = PreparedSample(rec)
+
+                sample_id = int(rec.get('sample_id', 0))
+
+                # Center/surface sampling changes every epoch, but is
+                # deterministic for a given (sample, epoch), independent
+                # of which DDP rank owns the sample.
+                sample_rng = np.random.default_rng(
+                    args.seed
+                    + epoch * 100_003
+                    + sample_id * 1_009
+                )
+
+                if args.transition_sampling == 'cyclic':
+                    ts, _, _, _ = cyclic_transition_indices(
+                        s,
+                        epoch,
+                        args.transitions_per_sample,
+                        args.seed,
+                    )
+                else:
+                    ts = None
+
+                for t, c, surf in iter_transition_batches(
+                    s,
+                    sample_rng,
+                    args.transitions_per_sample,
+                    args.centers_per_transition,
+                    args.batch_size,
+                    transition_indices=ts,
+                ):
+                    b = s.make_batch(t, c, surf)
+                    tb = normalize_inputs(to_torch(b, device), stats)
+                    opt.zero_grad(set_to_none=True)
+                    with torch.autocast(device_type='cuda',dtype=torch.bfloat16,enabled=not args.no_amp):
+                        out=model(tb['state_n'],tb['context_n'],tb['edge_n'],tb['mask']); loss,parts,_=compute_losses(out,tb,stats,vars(args))
+                    loss.backward()
+                    if args.grad_clip>0: torch.nn.utils.clip_grad_norm_(model.parameters(),args.grad_clip)
+                    opt.step(); sum_loss+=float(loss.detach()); nsteps+=1
+                del s; gc.collect()
+                if rank==0 and (ir%5==0 or ir==len(local_records)):
+                    print(f'epoch={epoch:03d} sample={ir}/{len(local_records)} train_loss={sum_loss/max(nsteps,1):.6e}',flush=True)
+            gsum,gsteps=reduce_pair(sum_loss,nsteps,device); train_loss=gsum/max(gsteps,1)
+            sched.step(); barrier()
+            stop=False
+            if rank==0:
+                v=validate(raw_model(model),val,stats,device,args); val_loss=float(v['loss'])
+                rec_hist={'epoch':epoch,'train_loss':train_loss,'val':v,'lr':float(opt.param_groups[0]['lr']),'seconds':time.time()-t0}; history.append(rec_hist)
+                print(json.dumps(rec_hist,ensure_ascii=False),flush=True)
+                improved=val_loss<best-1e-8
+                if improved: best=val_loss; bad_epochs=0; save_checkpoint(args.output_dir/'best_val.pt',epoch,best,model,opt,sched,history,vars(args),stats)
+                else: bad_epochs+=1
+                save_checkpoint(args.output_dir/'last.pt',epoch,best,model,opt,sched,history,vars(args),stats); save_json(args.output_dir/'history.json',history)
+                if epoch>=args.early_stop_start and bad_epochs>=args.early_stop_patience:
+                    print(f'EARLY STOP epoch={epoch} best_val={best:.6e} bad_epochs={bad_epochs}',flush=True); stop=True
+            flag=torch.tensor([1 if stop else 0],device=device,dtype=torch.int32)
+            if dist.is_initialized(): dist.broadcast(flag,0)
+            if int(flag.item()): break
+            barrier()
+    finally:
+        if dist.is_initialized(): dist.destroy_process_group()
+
+if __name__=='__main__': main()

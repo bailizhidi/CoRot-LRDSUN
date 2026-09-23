@@ -1,0 +1,25 @@
+{
+  "raw_path": "/data/run01/scxk573/lsz/ysy/physicsnemo/data/dataset_corot_constitutive_prod_v1/corot_constitutive_prod_v1_Base_TC4_sample_0149.npz",
+  "name": "corot_constitutive_prod_v1_Base_TC4_sample_0149",
+  "sample_id": 149,
+  "geometry_id": 149,
+  "split": "val",
+  "num_frames": 181,
+  "num_nodes": 17340,
+  "D_outer": 16.100000381469727,
+  "Thickness": 1.1699999570846558,
+  "R_bending": 71.0999984741211,
+  "t_over_D": 0.07266999781131744,
+  "R_over_D": 4.416150093078613,
+  "E_modulus": 110000.0,
+  "Poisson_Ratio": 0.38999998569488525,
+  "cache_path": "/data/run01/scxk573/lsz/ysy/physicsnemo/my_experiments/CoRot-LRDSUN-Constitutive-V1/prepared_cache_prod_v1/sample_0149",
+  "rank2_ratio_min": 0.5822586417198181,
+  "rank2_ratio_p01": 0.7250513434410095,
+  "region_counts": {
+    "0": 2499,
+    "1": 11526,
+    "2": 3315
+  },
+  "prepared_seconds": 25.091031074523926
+}
